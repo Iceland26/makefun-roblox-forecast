@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""roblox-up-and-coming-forecast-01 entry: momentum forecaster, stdlib only."""
+"""roblox-up-and-coming-forecast-01 entry: occupancy+drift forecaster, stdlib only."""
 import os
 import json
 import math
@@ -7,6 +7,13 @@ from datetime import datetime, timezone
 
 INPUT = os.environ.get("MAKEFUN_INPUT_DIR", "/input")
 OUTPUT = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+
+# ---- tunables (swept) ----
+TAU_RECENT = 28.0     # hours, "where it has been lately"
+TAU_OLD = 80.0        # hours, "where it was before"
+DRIFT = 0.45          # how much of the drift to extrapolate forward
+TIME_HORIZON = 40.0   # hours ahead (mid-window of the 72h)
+KERNEL_SCALE = 1.2    # Laplace width around predicted order
 
 
 def ts_of(s):
@@ -29,86 +36,41 @@ def main():
     for u in series:
         series[u].sort()
 
-    last_chart = reads[-1].get("up_and_coming", [])
-    rank_now = {}
-    for g in last_chart:
-        if isinstance(g, dict):
-            rank_now[g["universe_id"]] = g["rank"]
-    max_rank = len(rank_now) or 1
-
-    # ---- momentum: forecast future playing via log-linear regression ----
-    horizon_h = 40.0  # look-ahead window in hours (~mid-window)
-
-    def predict_playing(s):
-        base = s[-1]
-        pts = []
-        for i in range(max(0, len(s) - 8), len(s)):
-            t = (s[i][0] - base[0]) / 3600.0  # hours before last read (<= 0)
-            p = s[i][2]
-            if p and p > 1:
-                pts.append((t, math.log(p)))
-        if len(pts) < 3:
-            return base[2] or 0
-        n = len(pts)
-        sx = sum(t for t, _ in pts)
-        sy = sum(y for _, y in pts)
-        sxx = sum(t * t for t, _ in pts)
-        sxy = sum(t * y for t, y in pts)
-        den = n * sxx - sx * sx
-        if den == 0:
-            return base[2] or 0
-        slope = (n * sxy - sx * sy) / den  # log-playing per hour
-        intercept = (sy - slope * sx) / n
-        growth = slope * horizon_h
-        growth = max(-3.0, min(growth, 5.0))  # clamp noise
-        return math.exp(intercept + growth)
-
-    def median(vals):
-        v = sorted(vals)
-        n = len(v)
-        return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
-
-    scored = {}
+    # ---- occupancy: recency-weighted expected rank + a mild forward drift ----
+    occ = {}
     for uid, s in series.items():
-        rk = rank_now.get(uid, max_rank)
-        plays = [p for _, _, p in s if p and p > 0]
-        accel = 1.0
-        if len(plays) >= 4:
-            last2 = median(plays[-2:])
-            prev2 = median(plays[-4:-2])
-            accel = (last2 / prev2) if prev2 > 0 else 1.0
-        accel = max(accel, 0.3)
-        climb = max(s[0][1] - rk, 0)          # total rank climb (robust, rank not noisy)
-        pp = predict_playing(s)               # regression on the (noisy) playing
-        rank_norm = (max_rank - rk) / max_rank
-        score = (2.0 * rank_norm
-                 + 0.6 * math.log1p(climb)
-                 + 2.2 * math.log1p(accel)
-                 + 0.05 * math.log1p(max(pp, 0.0)))
-        scored[uid] = score
+        t0 = s[-1][0]
+        w_recent = 0.0
+        r_recent = 0.0
+        w_old = 0.0
+        r_old = 0.0
+        for (t, rank, play) in s:
+            age_h = (t0 - t) / 3600.0
+            w_recent += math.exp(-age_h / TAU_RECENT)
+            r_recent += math.exp(-age_h / TAU_RECENT) * rank
+            w_old += math.exp(-age_h / TAU_OLD)
+            r_old += math.exp(-age_h / TAU_OLD) * rank
+        if w_recent <= 0:
+            continue
+        avg_recent = r_recent / w_recent
+        avg_old = r_old / w_old if w_old > 0 else avg_recent
+        span_h = (t0 - s[0][0]) / 3600.0
+        if span_h > 0:
+            drift = (avg_recent - avg_old) * (TIME_HORIZON / span_h) * DRIFT
+        else:
+            drift = 0.0
+        occ[uid] = avg_recent + drift  # predicted rank (lower = higher on the chart)
 
-    ranked = sorted(scored, key=lambda u: -scored[u])
+    ranked = sorted(occ, key=lambda u: occ[u])
     pred = ranked[:places]
-    cur = [g["universe_id"] for g in sorted(last_chart, key=lambda x: x.get("rank", 999))][:places]
 
-    # ---- probability table: mixture of current-rank and momentum Laplace kernels ----
+    # ---- Laplace kernel around predicted order (concentrated) ----
     from collections import defaultdict
-    cur_rank = {}
-    for i, g in enumerate(sorted(last_chart, key=lambda x: x.get("rank", 999)), start=1):
-        cur_rank[g["universe_id"]] = i
-    mom_rank = {uid: i + 1 for i, uid in enumerate(ranked)}
-    universe = set(series.keys()) | set(cur_rank.keys())
-    scale = 1.2
-    w_cur = 0.62          # current rank dominates (chart is sticky, early hours matter)
-    w_mom = 1.0 - w_cur
+    pred_rank = {uid: i + 1 for i, uid in enumerate(ranked)}
     place_rows = defaultdict(list)
     for k in range(1, places + 1):
-        for uid in universe:
-            p = 0.0
-            if uid in cur_rank:
-                p += w_cur * math.exp(-abs(cur_rank[uid] - k) / scale)
-            if uid in mom_rank:
-                p += w_mom * math.exp(-abs(mom_rank[uid] - k) / scale)
+        for uid in pred_rank:
+            p = math.exp(-abs(pred_rank[uid] - k) / KERNEL_SCALE)
             if p >= 0.004:
                 place_rows[k].append((uid, p))
         place_rows[k].sort(key=lambda x: -x[1])
@@ -122,7 +84,6 @@ def main():
         rows = [(uid, round(p, 6)) for uid, p in place_rows[k]]
         s = sum(p for _, p in rows)
         if s > 1.0:
-            # rounding pushed the sum just over 1: subtract the excess from the largest
             rows.sort(key=lambda x: -x[1])
             rows[0] = (rows[0][0], round(rows[0][1] - (s - 1.0), 6))
         for uid, p in rows:
