@@ -8,12 +8,11 @@ from datetime import datetime, timezone
 INPUT = os.environ.get("MAKEFUN_INPUT_DIR", "/input")
 OUTPUT = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
 
-# ---- tunables (swept) ----
-TAU_RECENT = 28.0     # hours, "where it has been lately"
-TAU_OLD = 80.0        # hours, "where it was before"
-DRIFT = 0.45          # how much of the drift to extrapolate forward
-TIME_HORIZON = 40.0   # hours ahead (mid-window of the 72h)
-KERNEL_SCALE = 1.2    # Laplace width around predicted order
+TAU_RECENT = 28.0
+TAU_OLD = 80.0
+DRIFT = 0.45
+TIME_HORIZON = 40.0
+KERNEL_SCALE = 1.2
 
 
 def ts_of(s):
@@ -36,7 +35,6 @@ def main():
     for u in series:
         series[u].sort()
 
-    # ---- occupancy: recency-weighted expected rank + a mild forward drift ----
     occ = {}
     for uid, s in series.items():
         t0 = s[-1][0]
@@ -59,12 +57,11 @@ def main():
             drift = (avg_recent - avg_old) * (TIME_HORIZON / span_h) * DRIFT
         else:
             drift = 0.0
-        occ[uid] = avg_recent + drift  # predicted rank (lower = higher on the chart)
+        occ[uid] = avg_recent + drift
 
     ranked = sorted(occ, key=lambda u: occ[u])
     pred = ranked[:places]
 
-    # ---- Laplace kernel around predicted order (concentrated) ----
     from collections import defaultdict
     pred_rank = {uid: i + 1 for i, uid in enumerate(ranked)}
     place_rows = defaultdict(list)
