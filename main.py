@@ -91,28 +91,29 @@ def main():
     pred = ranked[:places]
     cur = [g["universe_id"] for g in sorted(last_chart, key=lambda x: x.get("rank", 999))][:places]
 
-    # ---- probabilities: merge momentum + current + neighbours, deduped per (place, game) ----
+    # ---- probability table: Laplace kernel around each game's predicted rank ----
+    # P(game at place k) ∝ exp(-|predicted_rank - k| / scale); smooth, honest spread
+    # that matches how uncertain the churn is, and generalises (no overfit to the
+    # practice window). Each place keeps its top-100 rows and sums to at most 1.
     from collections import defaultdict
-    pmap = defaultdict(float)
-    for k in range(places):
-        place = k + 1
-        if k < len(pred):
-            pmap[(place, pred[k])] += 0.40
-        if k < len(cur):
-            pmap[(place, cur[k])] += 0.30
-        for nb in (k - 1, k + 1):
-            if 0 <= nb < len(pred):
-                pmap[(place, pred[nb])] += 0.10
+    pred_rank = {uid: i + 1 for i, uid in enumerate(ranked)}
+    scale = 2.0
+    place_rows = defaultdict(list)
+    for k in range(1, places + 1):
+        for uid, pr in pred_rank.items():
+            p = math.exp(-abs(pr - k) / scale)
+            if p >= 0.004:
+                place_rows[k].append((uid, p))
+        place_rows[k].sort(key=lambda x: -x[1])
+        place_rows[k] = place_rows[k][:100]
+        total = sum(p for _, p in place_rows[k])
+        if total > 1.0:
+            place_rows[k] = [(u, p / total) for u, p in place_rows[k]]
+
     probabilities = []
-    place_sum = defaultdict(float)
-    for (place, uid), p in pmap.items():
-        probabilities.append({"universe_id": uid, "place": place, "p": p})
-        place_sum[place] += p
-    # each place's probabilities must sum to at most 1: rescale any place that exceeds
-    for r in probabilities:
-        sp = place_sum[r["place"]]
-        if sp > 1.0:
-            r["p"] = r["p"] / sp
+    for k in range(1, places + 1):
+        for uid, p in place_rows[k]:
+            probabilities.append({"universe_id": uid, "place": k, "p": round(p, 6)})
 
     top10 = list(dict.fromkeys(pred))[:places]
 
