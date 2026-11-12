@@ -112,8 +112,14 @@ def main():
 
     probabilities = []
     for k in range(1, places + 1):
-        for uid, p in place_rows[k]:
-            probabilities.append({"universe_id": uid, "place": k, "p": round(p, 6)})
+        rows = [(uid, round(p, 6)) for uid, p in place_rows[k]]
+        s = sum(p for _, p in rows)
+        if s > 1.0:
+            # rounding pushed the sum just over 1: subtract the excess from the largest
+            rows.sort(key=lambda x: -x[1])
+            rows[0] = (rows[0][0], round(rows[0][1] - (s - 1.0), 6))
+        for uid, p in rows:
+            probabilities.append({"universe_id": uid, "place": k, "p": p})
 
     top10 = list(dict.fromkeys(pred))[:places]
 
