@@ -91,17 +91,24 @@ def main():
     pred = ranked[:places]
     cur = [g["universe_id"] for g in sorted(last_chart, key=lambda x: x.get("rank", 999))][:places]
 
-    # ---- probability table: Laplace kernel around each game's predicted rank ----
-    # P(game at place k) ∝ exp(-|predicted_rank - k| / scale); smooth, honest spread
-    # that matches how uncertain the churn is, and generalises (no overfit to the
-    # practice window). Each place keeps its top-100 rows and sums to at most 1.
+    # ---- probability table: mixture of current-rank and momentum Laplace kernels ----
     from collections import defaultdict
-    pred_rank = {uid: i + 1 for i, uid in enumerate(ranked)}
-    scale = 2.0
+    cur_rank = {}
+    for i, g in enumerate(sorted(last_chart, key=lambda x: x.get("rank", 999)), start=1):
+        cur_rank[g["universe_id"]] = i
+    mom_rank = {uid: i + 1 for i, uid in enumerate(ranked)}
+    universe = set(series.keys()) | set(cur_rank.keys())
+    scale = 1.2
+    w_cur = 0.55          # current rank dominates (chart is sticky, early hours matter)
+    w_mom = 1.0 - w_cur
     place_rows = defaultdict(list)
     for k in range(1, places + 1):
-        for uid, pr in pred_rank.items():
-            p = math.exp(-abs(pr - k) / scale)
+        for uid in universe:
+            p = 0.0
+            if uid in cur_rank:
+                p += w_cur * math.exp(-abs(cur_rank[uid] - k) / scale)
+            if uid in mom_rank:
+                p += w_mom * math.exp(-abs(mom_rank[uid] - k) / scale)
             if p >= 0.004:
                 place_rows[k].append((uid, p))
         place_rows[k].sort(key=lambda x: -x[1])
