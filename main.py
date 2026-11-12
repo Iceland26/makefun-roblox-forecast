@@ -99,7 +99,7 @@ def main():
     mom_rank = {uid: i + 1 for i, uid in enumerate(ranked)}
     universe = set(series.keys()) | set(cur_rank.keys())
     scale = 1.2
-    w_cur = 0.55          # current rank dominates (chart is sticky, early hours matter)
+    w_cur = 0.50          # current rank dominates (chart is sticky, early hours matter)
     w_mom = 1.0 - w_cur
     place_rows = defaultdict(list)
     for k in range(1, places + 1):
