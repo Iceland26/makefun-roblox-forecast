@@ -36,8 +36,8 @@ def main():
             rank_now[g["universe_id"]] = g["rank"]
     max_rank = len(rank_now) or 1
 
-    # ---- momentum: predict future playing via log-linear regression ----
-    horizon_h = 40.0  # look-ahead hours, ~mid-window
+    # ---- momentum: forecast future playing via log-linear regression ----
+    horizon_h = 40.0  # look-ahead window in hours (~mid-window)
 
     def predict_playing(s):
         base = s[-1]
